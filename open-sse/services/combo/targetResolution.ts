@@ -491,6 +491,7 @@ async function orderByStrategy(
   const { strategy, body, combo, settings, config, log } = deps;
   if (getStrategyTraits(strategy).ordering === "auto") {
     const autoResult = await resolveAutoStrategyOrder({
+      traceInvocationId: deps.traceInvocationId,
       orderedTargets: initialOrderedTargets,
       body,
       combo,

@@ -219,6 +219,29 @@ See [#7992](https://github.com/diegosouzapw/OmniRoute/issues/7992) and [#7111](h
 
 ## How It Works (Persisted Auto-Combos)
 
+### Local coding capacity and image history
+
+The persisted `local-auto` combo defaults to practical estimated input budgets of
+24,000 tokens for normal coding and 45,000 for large coding. To override them,
+set `config.practicalCodingCapacity` to `{ "normal": 24000, "large": 45000 }`,
+with positive thresholds in ascending order. Other named Auto combos opt in by
+setting this field. These budgets are separate from **Context Affinity**, which
+scores connection reuse. They are also separate from the model's declared context
+window. Requests above the large budget receive an error asking the client to
+compact or split the request.
+
+The estimate includes the conversation, instructions, tool definitions and
+results, and attachments. It is not Ollama's tokenizer count. Set thresholds
+below the validated model windows to leave room for tokenizer differences and
+generation. With the policy enabled, Auto omits unreferenced historical image
+attachments from the outbound copy; current images and recognized references to
+earlier images are preserved. The client's conversation is unchanged.
+
+The persisted-combo trace exposes intent, practical capacity, candidate scores,
+and ranking reason under `autoEvaluation.ranking`. Compare that ranking with
+the dispatch decisions to see which target actually ran after compatibility
+checks or failover.
+
 The Auto-Combo Engine dynamically selects the best provider/model for each request using a **16-factor scoring function** (defined in `open-sse/services/autoCombo/scoring.ts` → `DEFAULT_WEIGHTS`). The default weights sum to `1.0`; custom weights are renormalized by `normalizeScoringWeights()`. Two of the sixteen — `cacheAffinity` and `resetWindowAffinity` — carry a default weight of `0`; `reliability` carries `0` in `DEFAULT_WEIGHTS` but `0.03` in generic packs and `0.04` in `reliability-first`, and `quality` carries `0.02` in packs (`0.03` in `quality-first`): they are still computed for every candidate, and `cacheAffinity` gates prompt-cache deduplication outside the score, so the zero-default factors simply do not vote by default while packs do.
 
 ![Auto-Combo 16-factor scoring](../diagrams/exported/auto-combo-scoring.svg)

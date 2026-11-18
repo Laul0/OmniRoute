@@ -136,7 +136,9 @@ import {
   finishComboTrace,
   getComboTrace,
   startComboTrace,
+  startAutoEvaluationTrace,
 } from "./combo/decisionTrace.ts";
+import { getPracticalCapacityConfig, prepareAutoMediaHistory } from "./combo/autoRequestPolicy.ts";
 import {
   QUOTA_SOFT_DEPRIORITIZE_FACTOR,
   setCandidateQuotaSoftPenalty,
@@ -891,6 +893,12 @@ async function handleComboChatInner({
   // #10681: opaque per-invocation decision trace (safe routing metadata only).
   const traceInvocationId = invocationId ?? createInvocationId();
   startComboTrace(traceInvocationId, { strategy, comboName: combo.name });
+  if (strategy === "auto") {
+    startAutoEvaluationTrace(traceInvocationId);
+    if (getPracticalCapacityConfig(combo.name, config.practicalCodingCapacity)) {
+      body = prepareAutoMediaHistory(body);
+    }
+  }
 
   const preContentTransportRecovery =
     clientRequestedStream && resilienceSettings.streamRecovery.enabled === true;

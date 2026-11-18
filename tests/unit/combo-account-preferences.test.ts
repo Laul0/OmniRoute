@@ -8,6 +8,7 @@ import {
 } from "../../open-sse/services/combo/accountPreferences.ts";
 import { resolveAutoStrategyOrder } from "../../open-sse/services/combo/resolveAutoStrategy.ts";
 import { comboRuntimeConfigSchema } from "../../src/shared/validation/schemas/combo.ts";
+import { resolveResilienceSettings } from "../../src/lib/resilience/settings.ts";
 import { resetDbInstance } from "../../src/lib/db/core.ts";
 after(() => resetDbInstance());
 
@@ -140,6 +141,61 @@ test("real auto resolver bounds exploration and explicit routers to first tier",
     assert.deepEqual(new Set(ids(result.orderedTargets)), new Set(["a", "b", "c", "d", "e"]));
     assert.deepEqual(ids(result.orderedTargets).slice(2, 3), ["c"]);
   }
+});
+
+test("local coding window preference stays inside the selected account tier", async () => {
+  const { setModelContextOverride } = await import("../../src/lib/db/modelContextOverrides.ts");
+  const { startComboTrace, startAutoEvaluationTrace, getComboTrace } =
+    await import("../../open-sse/services/combo/decisionTrace.ts");
+  const models = ["qwen3coder32k:latest", "qwen3-coder-64k:latest"];
+  const pool = models.map((model, index) => ({
+    ...target,
+    model,
+    modelStr: `ollama-local/${model}`,
+    provider: "ollama-local",
+    connectionId: index === 0 ? "reserve" : "preferred",
+    executionKey: `ollama-local/${model}`,
+  }));
+  models.forEach((model, index) =>
+    setModelContextOverride("ollama-local", model, index === 0 ? 32_768 : 65_536, "manual")
+  );
+  const traceId = "local-capacity-account-preferences";
+  startComboTrace(traceId, { strategy: "auto", comboName: "local-auto" });
+  startAutoEvaluationTrace(traceId);
+  const result = await resolveAutoStrategyOrder({
+    traceInvocationId: traceId,
+    orderedTargets: pool,
+    body: { messages: [{ role: "user", content: "Explain this TypeScript implementation." }] },
+    combo: {
+      name: "local-auto",
+      config: {
+        candidatePool: ["ollama-local"],
+        routerStrategy: "rules",
+        explorationRate: 0,
+        accountPreferences: { preferred: "preferred", reserve: "reserve" },
+      },
+    },
+    config: {},
+    settings: null,
+    resilienceSettings: resolveResilienceSettings({
+      resilienceSettings: { quotaPreflight: { enabled: false } },
+    }),
+    log: { info() {}, warn() {}, error() {}, debug() {} },
+    buildAutoCandidates: async () =>
+      pool.map((candidate) => ({
+        ...candidate,
+        quotaRemaining: 100,
+        quotaTotal: 100,
+        circuitBreakerState: "CLOSED" as const,
+        costPer1MTokens: 0,
+        p95LatencyMs: 10,
+        latencyStdDev: 0,
+        errorRate: 0,
+      })),
+  });
+  assert.ok("orderedTargets" in result);
+  assert.equal(result.orderedTargets[0].modelStr, pool[1].modelStr);
+  assert.equal(getComboTrace(traceId)?.autoEvaluation?.ranking?.winner, pool[1].modelStr);
 });
 
 test("blocked preferred accounts never reappear in fallback; reserve remains usable", async () => {

@@ -34,3 +34,15 @@ test("extractPromptForIntent skips harness wrappers in input and prompt bodies t
     assert.equal(classifyWithConfig(prompt, DEFAULT_INTENT_CONFIG), "medium");
   }
 });
+
+test("latest Responses user input retains wrapper stripping and writing intent", () => {
+  const prompt = extractPromptForIntent({
+    input: [
+      { role: "user", content: "Explain this TypeScript function." },
+      { role: "assistant", content: "The function returns a value." },
+      { role: "user", content: `${WRAPPED}Rewrite that explanation as a French blog section.` },
+    ],
+  });
+  assert.equal(prompt.trim(), "Rewrite that explanation as a French blog section.");
+  assert.equal(classifyWithConfig(prompt, DEFAULT_INTENT_CONFIG), "writing");
+});

@@ -205,6 +205,16 @@ export const comboRuntimeConfigSchema = z
     // wins over the global `settings.disableSessionStickiness` fallback. Default false
     // preserves the #3825 prompt-cache/504 fix.
     disableSessionStickiness: z.boolean().optional(),
+    practicalCodingCapacity: z
+      .object({
+        normal: z.number().int().positive(),
+        large: z.number().int().positive(),
+      })
+      .refine(({ normal, large }) => large > normal, {
+        message: "The large coding threshold must exceed the normal coding threshold",
+        path: ["large"],
+      })
+      .optional(),
     stickyWeightedLimit: z.coerce.number().int().min(0).max(1000).optional(),
     healthCheckEnabled: z.boolean().optional(),
     healthCheckTimeoutMs: z.coerce.number().int().min(100).max(30000).optional(),

@@ -1,14 +1,15 @@
 /**
  * Multilingual Intent Detection for AutoCombo
  *
- * Classifies prompts as: code | math | reasoning | creative | simple | medium
+ * Classifies prompts as: code | math | reasoning | writing | creative | simple | medium
  * using keywords in 9 languages (EN, PT-BR, ES, ZH, JA, RU, DE, KO, AR).
  *
  * Inspired by ClawRouter (BlockRunAI) multilingual routing system.
  * Execution: purely synchronous, <1ms, no I/O.
  */
 
-export type IntentType = "code" | "math" | "reasoning" | "creative" | "simple" | "medium";
+export type IntentType =
+  "code" | "math" | "reasoning" | "writing" | "creative" | "simple" | "medium";
 
 export interface ClassificationResult {
   type: IntentType;
@@ -35,6 +36,12 @@ export const CODE_KEYWORDS: readonly string[] = [
   "debug",
   "refactor",
   "typescript",
+  "powershell",
+  "node.js",
+  "c#",
+  "c++",
+  ".net",
+  "implementation",
   "python",
   "javascript",
   "code",
@@ -391,6 +398,33 @@ export const MATH_KEYWORDS: readonly string[] = [
   "احتمال",
 ];
 
+const WRITING_KEYWORDS = [
+  "réécris",
+  "reformule",
+  "corrige",
+  "résume",
+  "rédige",
+  "article de blog",
+  "courriel",
+  "ton professionnel",
+  "rewrite",
+  "rephrase",
+  "proofread",
+  "summarize",
+  "release note",
+];
+const WRITING_OUTPUT = [
+  "explanation",
+  "message",
+  "email",
+  "blog post",
+  "blog section",
+  "release note",
+  "article de blog",
+  "courriel",
+  "ton professionnel",
+];
+
 export const CREATIVE_KEYWORDS: readonly string[] = [
   // English
   "write",
@@ -510,6 +544,7 @@ export const CREATIVE_KEYWORDS: readonly string[] = [
   // العربية
   "كتابة",
   "قصة",
+  "اكتب",
   "قصيدة",
   "إبداعي",
   "مقال",
@@ -622,21 +657,15 @@ const MATH_MATCHERS = MATH_KEYWORDS.map(compileKeywordMatcher);
 const REASONING_MATCHERS = REASONING_KEYWORDS.map(compileKeywordMatcher);
 const CREATIVE_MATCHERS = CREATIVE_KEYWORDS.map(compileKeywordMatcher);
 const SIMPLE_MATCHERS = SIMPLE_KEYWORDS.map(compileKeywordMatcher);
+const WRITING_MATCHERS = WRITING_KEYWORDS.map(compileKeywordMatcher);
+const WRITING_OUTPUT_MATCHERS = WRITING_OUTPUT.map(compileKeywordMatcher);
 
 /**
  * Classify a prompt's intent using multilingual keyword matching.
- * Priority: code > math > reasoning > creative > simple > medium (default)
+ * Priority: code > math > reasoning > writing > creative > simple > medium (default)
  */
 export function classifyPromptIntent(prompt: string, systemPrompt?: string): IntentType {
-  const fullText = `${systemPrompt ?? ""} ${prompt}`.toLowerCase();
-  const wordCount = prompt.trim().split(/\s+/).length;
-
-  if (hasKeyword(fullText, CODE_MATCHERS)) return "code";
-  if (hasKeyword(fullText, MATH_MATCHERS)) return "math";
-  if (hasKeyword(fullText, REASONING_MATCHERS)) return "reasoning";
-  if (hasKeyword(fullText, CREATIVE_MATCHERS)) return "creative";
-  if (wordCount < 60 && hasKeyword(fullText, SIMPLE_MATCHERS)) return "simple";
-  return "medium";
+  return classifyWithConfig(prompt, DEFAULT_INTENT_CONFIG, systemPrompt);
 }
 
 export interface IntentClassifierConfig {
@@ -654,13 +683,17 @@ export const DEFAULT_INTENT_CONFIG: IntentClassifierConfig = {
   simpleMaxWords: 60,
 };
 
+function normalizeIntentText(text: string): string {
+  return text.normalize("NFKC").toLowerCase();
+}
+
 export function classifyWithConfig(
   prompt: string,
   config: IntentClassifierConfig,
   systemPrompt?: string
 ): IntentType {
   if (!config.enabled) return "medium";
-  const fullText = `${systemPrompt ?? ""} ${prompt}`.toLowerCase();
+  const fullText = normalizeIntentText(`${systemPrompt ?? ""} ${prompt}`);
   const wordCount = prompt.trim().split(/\s+/).length;
   const maxSimpleWords = config.simpleMaxWords ?? 60;
   const codeKws = config.extraCodeKeywords?.length
@@ -678,9 +711,14 @@ export function classifyWithConfig(
   const simpleKws = config.extraSimpleKeywords?.length
     ? [...SIMPLE_MATCHERS, ...config.extraSimpleKeywords.map(compileKeywordMatcher)]
     : SIMPLE_MATCHERS;
+  const userText = normalizeIntentText(prompt);
+  const writingMatch = hasKeyword(userText, WRITING_MATCHERS);
+  // An explicit prose transformation can quote code or mention technical terms.
+  if (writingMatch && hasKeyword(userText, WRITING_OUTPUT_MATCHERS)) return "writing";
   if (hasKeyword(fullText, codeKws)) return "code";
   if (hasKeyword(fullText, mathKws)) return "math";
   if (hasKeyword(fullText, reasoningKws)) return "reasoning";
+  if (writingMatch || /^(?:draft|blog post)[.!?]?$/.test(userText.trim())) return "writing";
   if (hasKeyword(fullText, creativeKws)) return "creative";
   if (wordCount < maxSimpleWords && hasKeyword(fullText, simpleKws)) return "simple";
   return "medium";

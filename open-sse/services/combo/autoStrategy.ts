@@ -186,6 +186,8 @@ export function extractPromptForIntent(body: Record<string, unknown> | null | un
 
   if (typeof body.input === "string") return stripHarnessWrappers(body.input);
   if (Array.isArray(body.input)) {
+    const user = body.input.findLast((item) => isRecord(item) && item.role === "user");
+    if (isRecord(user)) return stripHarnessWrappers(toTextContent(user.content));
     const text = body.input
       .map((item) => {
         if (!isRecord(item)) return "";
@@ -202,12 +204,14 @@ export function extractPromptForIntent(body: Record<string, unknown> | null | un
   return "";
 }
 
-export function mapIntentToTaskType(intent: string): "coding" | "analysis" | "default" {
+export function mapIntentToTaskType(intent: string): "coding" | "analysis" | "writing" | "default" {
   switch (intent) {
     case "code":
       return "coding";
     case "reasoning":
       return "analysis";
+    case "writing":
+      return "writing";
     case "simple":
       return "default";
     case "medium":

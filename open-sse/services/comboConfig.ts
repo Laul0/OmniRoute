@@ -214,6 +214,7 @@ const DEFAULT_COMBO_CONFIG = {
   // Connection-aware expansion for group-B combo strategies is opt-in.
   connectionAwareExpansion: false,
   connectionAwareExpansionMaxPerTarget: 8,
+  practicalCodingCapacity: undefined as { normal: number; large: number } | undefined,
   // Context window requirements for combo target filtering/sorting (undefined by
   // default — declared here so resolveComboSetupConfig's inferred return type
   // includes the key; combo.ts reads config.contextRequirements).
