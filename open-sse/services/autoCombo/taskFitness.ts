@@ -78,7 +78,20 @@ function loadRetiredModels(): Set<string> {
 }
 
 const FITNESS_TABLE: Record<string, Record<string, number>> = {
+  writing: {
+    "mistralnemo16k:latest": 0.95,
+    "qwen3coder32k:latest": 0.2,
+    "qwen3-coder-64k:latest": 0.2,
+    "ministral-3:8b": 0.4,
+  },
+  vision: { "ministral-3:8b": 0.95 },
+  multimodal: { "ministral-3:8b": 0.95 },
+  technical: { "qwen3coder32k:latest": 0.9, "qwen3-coder-64k:latest": 0.9 },
+  repository: { "qwen3coder32k:latest": 0.9, "qwen3-coder-64k:latest": 0.9 },
+  "large-context": { "qwen3-coder-64k:latest": 0.95 },
   coding: {
+    "qwen3coder32k:latest": 0.9,
+    "qwen3-coder-64k:latest": 0.9,
     "gpt-4o": 0.9,
     "gpt-4o-mini": 0.8,
     "gpt-4-turbo": 0.88,
@@ -133,6 +146,7 @@ const FITNESS_TABLE: Record<string, Record<string, number>> = {
     "deepseek-v3": 0.78,
   },
   default: {
+    "mistralnemo16k:latest": 0.8,
     "gpt-4o": 0.85,
     "gemini-3.1-pro": 0.85,
     "deepseek-v3": 0.75,

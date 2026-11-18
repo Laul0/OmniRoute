@@ -22,6 +22,8 @@ const {
   startComboTrace,
 } = await import("../../../open-sse/services/combo/decisionTrace.ts");
 const { handleComboChat } = await import("../../../open-sse/services/combo.ts");
+const { setModelContextOverride } = await import("../../../src/lib/db/modelContextOverrides.ts");
+const { addCustomModel } = await import("../../../src/lib/db/models.ts");
 const { recordComboRequest, resetComboMetrics } =
   await import("../../../open-sse/services/comboMetrics.ts");
 
@@ -44,6 +46,125 @@ function rateLimitedResponse() {
 }
 
 beforeEach(() => resetComboTraceStore());
+
+test("persisted local Auto re-evaluates mixed turns and enforces coding capacity", async () => {
+  const normal = "qwen3coder32k:latest";
+  const large = "qwen3-coder-64k:latest";
+  const writing = "mistralnemo16k:latest";
+  const vision = "ministral-3:8b";
+  const provider = "ollama-local";
+  const model = (id: string) => `${provider}/${id}`;
+  assert.ok(setModelContextOverride(provider, normal, 32_768, "manual"));
+  assert.ok(setModelContextOverride(provider, large, 65_536, "manual"));
+  assert.ok(setModelContextOverride(provider, writing, 16_384, "manual"));
+  assert.ok(setModelContextOverride(provider, vision, 32_768, "manual"));
+  await addCustomModel(
+    provider,
+    vision,
+    vision,
+    "manual",
+    "chat-completions",
+    ["chat"],
+    undefined,
+    {},
+    true
+  );
+  const image = { type: "image_url", image_url: { url: "data:image/png;base64,fixture" } };
+  const history: { role: string; content: unknown }[] = [];
+  for (const [content, historySize, category, expected, expectImage] of [
+    ["Explain this TypeScript implementation.", 0, "coding", normal, false],
+    [
+      "Rewrite that explanation as a concise professional French blog section.",
+      0,
+      "writing",
+      writing,
+      false,
+    ],
+    [
+      [{ type: "text", text: "Explain what is shown in this image." }, image],
+      0,
+      "vision",
+      vision,
+      true,
+    ],
+    ["Now modify the TypeScript implementation.", 0, "coding", normal, false],
+    ["Look again at the previous image and explain the navigation.", 0, "vision", vision, true],
+    ["Modify the TypeScript implementation.", 140_000, "coding", large, false],
+    ["Modify the TypeScript implementation.", 200_000, "coding", null, false],
+  ] as const) {
+    history.push({ role: "user", content });
+    const calls: string[] = [];
+    const invocationId = createInvocationId();
+    const response = await handleComboChat({
+      body: {
+        model: "local-auto",
+        messages: history,
+        // The large payload is not in the latest user message.
+        tools: historySize
+          ? [
+              {
+                type: "function",
+                function: { name: "read_fixture", description: "x".repeat(historySize) },
+              },
+            ]
+          : [],
+      },
+      combo: {
+        name: "local-auto",
+        strategy: "auto",
+        models: [model(large), model(writing), model(normal), model(vision)],
+        config: {
+          disableSessionStickiness: true,
+          maxRetries: 0,
+          routerStrategy: "rules",
+          candidatePool: [provider],
+          explorationRate: 0,
+          weights: {
+            taskFit: 35,
+            contextAffinity: 25,
+            quality: 20,
+            latencyInv: 5,
+            stability: 5,
+            specificityMatch: 5,
+            health: 5,
+            quota: 0,
+            costInv: 0,
+            tierPriority: 0,
+            tierAffinity: 0,
+            cacheAffinity: 0,
+            sessionAvailability: 0,
+            resetWindowAffinity: 0,
+            connectionDensity: 0,
+            reliability: 0,
+          },
+        },
+      },
+      relayOptions: { sessionId: "local-auto-mixed-fixture" },
+      invocationId,
+      handleSingleModel: async (outboundBody, target) => {
+        assert.equal(JSON.stringify(outboundBody.messages).includes("base64,fixture"), expectImage);
+        calls.push(target);
+        return okResponse("Fixture response.");
+      },
+      isModelAvailable: async () => true,
+      log,
+      settings: null,
+      allCombos: null,
+    });
+    const trace = getComboTrace(invocationId);
+    const ranking = trace?.autoEvaluation?.ranking;
+    assert.equal(ranking?.category, category);
+    assert.equal(response.status, expected ? 200 : 400);
+    assert.deepEqual(calls, expected ? [model(expected)] : [], JSON.stringify(ranking));
+    if (expected) assert.equal(ranking?.winner, model(expected));
+    if (expected === large) {
+      assert.ok(ranking?.filtered.some(({ target }) => target === model(normal)));
+    }
+    if (!expected) assert.equal(ranking?.reason, "practical_context_limit");
+    history.push({ role: "assistant", content: "Fixture response." });
+  }
+  assert.ok(JSON.stringify(history).includes("base64,fixture"), "client history remains intact");
+});
 
 test("createInvocationId yields unique opaque ids", () => {
   const a = createInvocationId();

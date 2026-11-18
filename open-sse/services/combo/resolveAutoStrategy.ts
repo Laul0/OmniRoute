@@ -51,6 +51,12 @@ import type {
   ResolvedComboTarget,
 } from "./types.ts";
 import { normalizeAutoConnectionScope } from "./autoConnectionScope.ts";
+import { getPracticalCapacityConfig, selectPracticalCapacity } from "./autoRequestPolicy.ts";
+import {
+  recordAutoEvaluationCandidate,
+  recordPersistedAutoRanking,
+  type PersistedAutoRanking,
+} from "./decisionTrace.ts";
 
 /**
  * Dependency-injected `buildAutoCandidates` — it lives in `combo.ts` (the host of
@@ -67,6 +73,7 @@ type BuildAutoCandidates = (
 ) => Promise<AutoProviderCandidate[]>;
 
 export interface ResolveAutoStrategyDeps {
+  traceInvocationId?: string;
   orderedTargets: ResolvedComboTarget[];
   body: Record<string, unknown>;
   combo: ComboLike;
@@ -197,6 +204,58 @@ export async function resolveAutoStrategyOrder(
   } = deps;
   let orderedTargets = deps.orderedTargets;
   let autoUsedExplicitRouter = false;
+  const prompt = extractPromptForIntent(body);
+  const systemPrompt = typeof combo.system_message === "string" ? combo.system_message : undefined;
+  const intent = classifyWithConfig(prompt, getIntentConfig(settings, combo), systemPrompt);
+  const requirements = deriveRequestCompatibilityRequirements(
+    systemPrompt
+      ? {
+          ...body,
+          messages: [
+            { role: "system", content: systemPrompt },
+            ...(Array.isArray(body.messages) ? body.messages : []),
+          ],
+        }
+      : body
+  );
+  const taskType = requirements.requiresVision ? "vision" : mapIntentToTaskType(intent);
+  const practical =
+    taskType === "coding"
+      ? getPracticalCapacityConfig(combo.name, config.practicalCodingCapacity)
+      : null;
+  const capacity = practical
+    ? selectPracticalCapacity(requirements.estimatedInputTokens, practical)
+    : null;
+  const traceId = deps.traceInvocationId;
+  const ranking: PersistedAutoRanking = {
+    intent,
+    category: taskType,
+    requiresVision: requirements.requiresVision,
+    estimatedSerializedTokens: requirements.estimatedInputTokens,
+    capacity,
+    filtered: [],
+    scores: [],
+  };
+  if (traceId) {
+    for (const target of orderedTargets) {
+      recordAutoEvaluationCandidate(traceId, {
+        target: target.modelStr,
+        provider: target.provider,
+        model: parseModel(target.modelStr).model ?? target.modelStr,
+      });
+    }
+    recordPersistedAutoRanking(traceId, ranking);
+  }
+
+  if (capacity === "oversized") {
+    ranking.reason = "practical_context_limit";
+    return {
+      earlyResponse: errorResponse(
+        400,
+        "The request exceeds the practical coding context. Compact or split the request."
+      ),
+    };
+  }
 
   const requestHasTools = Array.isArray(body?.tools) && body.tools.length > 0;
   let eligibleTargets = [...orderedTargets];
@@ -217,6 +276,12 @@ export async function resolveAutoStrategyOrder(
       (target) =>
         supportsToolCalling(target.modelStr) || providerSupportsEmulatedToolCalling(target.provider)
     );
+    if (filtered.length || !compatFilterFailOpen) {
+      for (const target of eligibleTargets) {
+        if (!filtered.includes(target))
+          ranking.filtered.push({ target: target.modelStr, reason: "tools" });
+      }
+    }
     if (filtered.length > 0) {
       eligibleTargets = filtered;
     } else if (compatFilterFailOpen) {
@@ -267,6 +332,11 @@ export async function resolveAutoStrategyOrder(
       return limit >= estimatedInputTokens;
     });
     if (filteredByContext.length > 0) {
+      for (const target of eligibleTargets) {
+        if (!filteredByContext.includes(target)) {
+          ranking.filtered.push({ target: target.modelStr, reason: "context_window" });
+        }
+      }
       log.debug?.(
         "COMBO",
         `Auto strategy: context-window filter kept ${filteredByContext.length}/${eligibleTargets.length} candidates (est. ${estimatedInputTokens} tokens)`
@@ -296,7 +366,12 @@ export async function resolveAutoStrategyOrder(
   // Recheck before scoring so unsupported transports cannot consume the retry
   // budget, and retain this pool even when candidate telemetry is unavailable.
   if (hasMediaRequirements(deriveRequestCompatibilityRequirements(body))) {
-    eligibleTargets = filterTargetsByRequestCompatibility(eligibleTargets, body, log, combo.name);
+    const compatible = filterTargetsByRequestCompatibility(eligibleTargets, body, log, combo.name);
+    for (const target of eligibleTargets) {
+      if (!compatible.includes(target))
+        ranking.filtered.push({ target: target.modelStr, reason: "media_or_request_capability" });
+    }
+    eligibleTargets = compatible;
     if (eligibleTargets.length === 0) {
       return {
         earlyResponse: errorResponse(
@@ -312,12 +387,29 @@ export async function resolveAutoStrategyOrder(
     orderedTargets = eligibleTargets;
   }
 
-  const prompt = extractPromptForIntent(body);
-  const systemPrompt = typeof combo?.system_message === "string" ? combo.system_message : undefined;
-  const intentConfig = getIntentConfig(settings, combo);
-  const intent = classifyWithConfig(prompt, intentConfig, systemPrompt);
+  if (practical && capacity) {
+    const minimumWindow = Math.max(
+      requirements.requiredContextTokens,
+      capacity === "large" ? practical.large : practical.normal
+    );
+    eligibleTargets = eligibleTargets.filter((target) => {
+      const window = getModelContextLimitForModelString(target.modelStr);
+      if (window != null && window >= minimumWindow) return true;
+      ranking.filtered.push({ target: target.modelStr, reason: "practical_context_limit" });
+      return false;
+    });
+    if (!eligibleTargets.length) {
+      ranking.reason = "no_suitable_context_window";
+      return {
+        earlyResponse: errorResponse(
+          400,
+          "No available model fits the practical coding context. Compact or split the request."
+        ),
+      };
+    }
+    orderedTargets = eligibleTargets;
+  }
   recordComboIntent(combo.name, intent);
-  const taskType = mapIntentToTaskType(intent);
 
   const {
     routingStrategy,
@@ -413,6 +505,12 @@ export async function resolveAutoStrategyOrder(
       buildAutoCandidates,
       apiKeyAllowedConnections: deps.apiKeyAllowedConnections ?? null,
     });
+  ranking.scores = scoredTargets.map(({ target, score, factors }) => ({
+    target: target.modelStr,
+    total: score,
+    factors,
+    contextWindow: getModelContextLimitForModelString(target.modelStr) ?? null,
+  }));
   for (let index = 0; index < sourceCandidates.length; index += 1) {
     sourceCandidates[index].cacheAffinity = candidates[index]?.cacheAffinity;
   }
@@ -478,6 +576,32 @@ export async function resolveAutoStrategyOrder(
 
     if (!selectedProvider || !selectedModel) {
       let selection;
+      // Among the strongest coding candidates, prefer the smallest window that fits.
+      // Account health and budget still apply inside the native selector.
+      let selectionPool = routableCandidates;
+      if (capacity && scoredTargets.length && budgetCap === undefined) {
+        const bestFitness = Math.max(...scoredTargets.map(({ factors }) => factors.taskFit));
+        const strongest = scoredTargets.filter(({ factors }) => factors.taskFit === bestFitness);
+        const smallestWindow = Math.min(
+          ...strongest.map(
+            ({ target }) => getModelContextLimitForModelString(target.modelStr) ?? Infinity
+          )
+        );
+        const preferredModels = new Set(
+          strongest
+            .filter(
+              ({ target }) => getModelContextLimitForModelString(target.modelStr) === smallestWindow
+            )
+            .map(({ target }) => target.modelStr)
+        );
+        const preferred = routableCandidates.filter((candidate) =>
+          preferredModels.has(candidate.modelStr)
+        );
+        if (preferred.length) {
+          selectionPool = preferred;
+          autoUsedExplicitRouter = true;
+        }
+      }
       try {
         selection = selectAutoProvider(
           {
@@ -493,7 +617,7 @@ export async function resolveAutoStrategyOrder(
             explorationRate,
             manifestHint: autoManifestHint,
           },
-          routableCandidates,
+          selectionPool,
           taskType
         );
       } catch (err) {
@@ -508,7 +632,7 @@ export async function resolveAutoStrategyOrder(
       selectedProvider = selection.provider;
       selectedModel = selection.model;
       selectedConnectionId = selection.connectionId ?? null;
-      selectionReason = `score=${selection.score.toFixed(3)}${selection.isExploration ? " (exploration)" : ""}`;
+      selectionReason = `score=${selection.score.toFixed(3)}${selection.isExploration ? " (exploration)" : ""}${selectionPool !== routableCandidates ? " (coding fitness and smallest suitable window)" : ""}`;
     }
 
     const rankedTargets = scoredTargets.map((entry) => entry.target);
@@ -532,6 +656,8 @@ export async function resolveAutoStrategyOrder(
         ),
       };
     }
+    ranking.winner = selectedTarget.modelStr;
+    ranking.reason = selectionReason;
 
     // Keep eligibleTargets as the last-resort fallback tail: dedupe drops the
     // routable ranked ones (and, when the cutoff is OFF, makes this identical to

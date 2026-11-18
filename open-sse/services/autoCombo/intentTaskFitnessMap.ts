@@ -25,6 +25,7 @@ const INTENT_TO_TASK_FITNESS_KEY: Record<IntentType, string> = {
   code: "coding",
   math: "analysis",
   reasoning: "analysis",
+  writing: "writing",
   creative: "default",
   simple: "default",
   medium: "default",

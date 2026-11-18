@@ -1,14 +1,15 @@
 /**
  * Multilingual Intent Detection for AutoCombo
  *
- * Classifies prompts as: code | math | reasoning | creative | simple | medium
+ * Classifies prompts as: code | math | reasoning | writing | creative | simple | medium
  * using keywords in 9 languages (EN, PT-BR, ES, ZH, JA, RU, DE, KO, AR).
  *
  * Inspired by ClawRouter (BlockRunAI) multilingual routing system.
  * Execution: purely synchronous, <1ms, no I/O.
  */
 
-export type IntentType = "code" | "math" | "reasoning" | "creative" | "simple" | "medium";
+export type IntentType =
+  "code" | "math" | "reasoning" | "writing" | "creative" | "simple" | "medium";
 
 export interface ClassificationResult {
   type: IntentType;
@@ -35,6 +36,12 @@ export const CODE_KEYWORDS: readonly string[] = [
   "debug",
   "refactor",
   "typescript",
+  "powershell",
+  "node.js",
+  "c#",
+  "c++",
+  ".net",
+  "implementation",
   "python",
   "javascript",
   "code",
@@ -364,6 +371,7 @@ export const MATH_KEYWORDS: readonly string[] = [
   // 한국어
   "계산",
   "방정식",
+  "방정식을",
   "공식",
   "적분",
   "미분",
@@ -389,6 +397,33 @@ export const MATH_KEYWORDS: readonly string[] = [
   "متجه",
   "إحصاء",
   "احتمال",
+];
+
+const WRITING_KEYWORDS = [
+  "réécris",
+  "reformule",
+  "corrige",
+  "résume",
+  "rédige",
+  "article de blog",
+  "courriel",
+  "ton professionnel",
+  "rewrite",
+  "rephrase",
+  "proofread",
+  "summarize",
+  "release note",
+];
+const WRITING_OUTPUT = [
+  "explanation",
+  "message",
+  "email",
+  "blog post",
+  "blog section",
+  "release note",
+  "article de blog",
+  "courriel",
+  "ton professionnel",
 ];
 
 export const CREATIVE_KEYWORDS: readonly string[] = [
@@ -496,6 +531,7 @@ export const CREATIVE_KEYWORDS: readonly string[] = [
   // 한국어
   "쓰기",
   "이야기",
+  "이야기를",
   "시",
   "창의적",
   "블로그",
@@ -510,6 +546,7 @@ export const CREATIVE_KEYWORDS: readonly string[] = [
   // العربية
   "كتابة",
   "قصة",
+  "اكتب",
   "قصيدة",
   "إبداعي",
   "مقال",
@@ -589,30 +626,10 @@ export const SIMPLE_KEYWORDS: readonly string[] = [
 
 /**
  * Classify a prompt's intent using multilingual keyword matching.
- * Priority: code > math > reasoning > creative > simple > medium (default)
+ * Priority: code > math > reasoning > writing > creative > simple > medium (default)
  */
 export function classifyPromptIntent(prompt: string, systemPrompt?: string): IntentType {
-  const fullText = `${systemPrompt ?? ""} ${prompt}`.toLowerCase();
-  const wordCount = prompt.trim().split(/\s+/).length;
-
-  for (const kw of CODE_KEYWORDS) {
-    if (fullText.includes(kw.toLowerCase())) return "code";
-  }
-  for (const kw of MATH_KEYWORDS) {
-    if (fullText.includes(kw.toLowerCase())) return "math";
-  }
-  for (const kw of REASONING_KEYWORDS) {
-    if (fullText.includes(kw.toLowerCase())) return "reasoning";
-  }
-  for (const kw of CREATIVE_KEYWORDS) {
-    if (fullText.includes(kw.toLowerCase())) return "creative";
-  }
-  if (wordCount < 60) {
-    for (const kw of SIMPLE_KEYWORDS) {
-      if (fullText.includes(kw.toLowerCase())) return "simple";
-    }
-  }
-  return "medium";
+  return classifyWithConfig(prompt, DEFAULT_INTENT_CONFIG, systemPrompt);
 }
 
 export interface IntentClassifierConfig {
@@ -630,13 +647,31 @@ export const DEFAULT_INTENT_CONFIG: IntentClassifierConfig = {
   simpleMaxWords: 60,
 };
 
+function normalizeIntentText(text: string): string {
+  return text.normalize("NFKC").toLowerCase();
+}
+
+function matchesKeyword(text: string, keyword: string): boolean {
+  const term = normalizeIntentText(keyword).trim();
+  if (!term) return false;
+  // These scripts do not reliably delimit words with whitespace.
+  if (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(term)) {
+    return text.includes(term);
+  }
+  const literal = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(
+    `(?<![\\p{L}\\p{M}\\p{N}\\p{Pc}])${literal}(?![\\p{L}\\p{M}\\p{N}\\p{Pc}])`,
+    "u"
+  ).test(text);
+}
+
 export function classifyWithConfig(
   prompt: string,
   config: IntentClassifierConfig,
   systemPrompt?: string
 ): IntentType {
   if (!config.enabled) return "medium";
-  const fullText = `${systemPrompt ?? ""} ${prompt}`.toLowerCase();
+  const fullText = normalizeIntentText(`${systemPrompt ?? ""} ${prompt}`);
   const wordCount = prompt.trim().split(/\s+/).length;
   const maxSimpleWords = config.simpleMaxWords ?? 60;
   const codeKws = [...CODE_KEYWORDS, ...(config.extraCodeKeywords ?? [])];
@@ -644,21 +679,26 @@ export function classifyWithConfig(
   const reasoningKws = [...REASONING_KEYWORDS, ...(config.extraReasoningKeywords ?? [])];
   const creativeKws = [...CREATIVE_KEYWORDS, ...(config.extraCreativeKeywords ?? [])];
   const simpleKws = [...SIMPLE_KEYWORDS, ...(config.extraSimpleKeywords ?? [])];
+  const userText = normalizeIntentText(prompt);
+  const writingMatch = WRITING_KEYWORDS.some((kw) => matchesKeyword(userText, kw));
+  // An explicit prose transformation can quote code or mention technical terms.
+  if (writingMatch && WRITING_OUTPUT.some((kw) => matchesKeyword(userText, kw))) return "writing";
   for (const kw of codeKws) {
-    if (fullText.includes(kw.toLowerCase())) return "code";
+    if (matchesKeyword(fullText, kw)) return "code";
   }
   for (const kw of mathKws) {
-    if (fullText.includes(kw.toLowerCase())) return "math";
+    if (matchesKeyword(fullText, kw)) return "math";
   }
   for (const kw of reasoningKws) {
-    if (fullText.includes(kw.toLowerCase())) return "reasoning";
+    if (matchesKeyword(fullText, kw)) return "reasoning";
   }
+  if (writingMatch || /^(?:draft|blog post)[.!?]?$/.test(userText.trim())) return "writing";
   for (const kw of creativeKws) {
-    if (fullText.includes(kw.toLowerCase())) return "creative";
+    if (matchesKeyword(fullText, kw)) return "creative";
   }
   if (wordCount < maxSimpleWords) {
     for (const kw of simpleKws) {
-      if (fullText.includes(kw.toLowerCase())) return "simple";
+      if (matchesKeyword(fullText, kw)) return "simple";
     }
   }
   return "medium";

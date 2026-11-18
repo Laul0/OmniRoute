@@ -100,6 +100,26 @@ export interface AutoEvaluationTrace {
   stages: AutoEvaluationStage[];
   candidates: AutoEvaluationCandidate[];
   transitions: AutoEvaluationTransition[];
+  ranking?: PersistedAutoRanking;
+}
+
+export interface PersistedAutoRanking {
+  intent: string;
+  category: string;
+  requiresVision: boolean;
+  estimatedSerializedTokens: number;
+  capacity: string | null;
+  filtered: { target: string; reason: string }[];
+  scores: { target: string; factors: object; total: number; contextWindow: number | null }[];
+  winner?: string;
+  reason?: string;
+}
+
+export function recordPersistedAutoRanking(invocationId: string, ranking: PersistedAutoRanking) {
+  bestEffortAutoEvaluationWrite(() => {
+    const evaluation = traces.get(invocationId)?.autoEvaluation;
+    if (evaluation) evaluation.ranking = ranking;
+  });
 }
 
 export interface ComboTrace {

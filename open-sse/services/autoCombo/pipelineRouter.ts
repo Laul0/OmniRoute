@@ -43,6 +43,7 @@ const INTENT_TO_TASK: Record<IntentType, TaskType> = {
   code: "code",
   math: "math",
   reasoning: "reasoning",
+  writing: "creative",
   creative: "creative",
   medium: "medium",
   simple: "simple",
